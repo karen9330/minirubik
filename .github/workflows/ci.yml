@@ -1,0 +1,25 @@
+name: C CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: make
+      - run: make check
+
+  prove:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+      - run: opam install -y frama-c alt-ergo
+      - run: opam exec -- why3 config detect
+      - run: opam exec -- make prove

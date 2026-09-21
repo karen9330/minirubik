@@ -1,0 +1,5 @@
+.frama-c/
+.frama-c-mcp/
+*.swp
+solver
+mini
