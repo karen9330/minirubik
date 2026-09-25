@@ -1,0 +1,261 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum {
+    CUBIES = 7,
+    PERMUTATIONS = 5040,
+    ORIENTATIONS = 729,
+    STATES = PERMUTATIONS * ORIENTATIONS,
+    MOVES = 9
+};
+
+typedef struct {
+    uint8_t p[CUBIES], o[CUBIES];   // record the cube state.
+} state_t;
+
+/*@ predicate valid_state(state_t *state) =
+      (\forall integer i; 0 <= i < CUBIES ==>
+         state->p[i] < CUBIES && state->o[i] < 3) &&
+      (\forall integer i, j; 0 <= i < j < CUBIES ==>
+         state->p[i] != state->p[j]) &&
+      (state->o[0] + state->o[1] + state->o[2] + state->o[3] +
+       state->o[4] + state->o[5] + state->o[6]) % 3 == 0;
+ */
+
+static const char *const move_names[MOVES] = {"R",  "R2", "R'", "B", "B2",
+                                              "B'", "D",  "D2", "D'"};
+static const uint8_t inverse_move[MOVES] = {2, 1, 0, 5, 4, 3, 8, 7, 6};
+/* Each destination takes a cubie from source[face][destination]. */
+static const uint8_t source[3][CUBIES] = {
+    {1, 4, 2, 0, 3, 5, 6},  // R
+    {0, 1, 2, 4, 5, 6, 3},  // B
+    {0, 2, 5, 3, 1, 4, 6},  // D
+};
+static const uint8_t twist[3][CUBIES] = {
+    {1, 2, 0, 2, 1, 0, 0},
+    {0, 0, 0, 1, 2, 1, 2},
+    {0, 0, 0, 0, 0, 0, 0},
+};
+
+/* The three quarter-turns preserve the fixed front-upper-left corner. */
+/*@ requires face < 3;
+    assigns \nothing;
+    ensures \forall integer i; 0 <= i < CUBIES ==>
+              \result.p[i] == state.p[source[face][i]];
+    ensures \forall integer i; 0 <= i < CUBIES ==>
+              \result.o[i] == (state.o[source[face][i]] + twist[face][i]) % 3;
+ */
+
+/*
+ * Apply one 90-degree clockwise turn to the selected face.
+ *
+ * For each destination position i:
+ * 1. Find the old position from which the cubie comes.
+ * 2. Move that cubie to position i.
+ * 3. Adjust its orientation according to the face-specific twist.
+ *
+ * Orientation values are in {0, 1, 2} and wrap around modulo 3.
+ */
+static state_t quarter_turn(state_t state, uint8_t face)
+{
+    state_t result;
+    /*@ loop invariant 0 <= i <= CUBIES;
+        loop invariant \forall integer j; 0 <= j < i ==>
+          result.p[j] == state.p[source[face][j]];
+        loop invariant \forall integer j; 0 <= j < i ==>
+          result.o[j] == (state.o[source[face][j]] + twist[face][j]) % 3;
+        loop assigns i, result.p[0..6], result.o[0..6];
+        loop variant CUBIES - i;
+    */
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        uint8_t from = source[face][i];
+        result.p[i] = state.p[from];
+        result.o[i] = (uint8_t) ((state.o[from] + twist[face][i]) % 3U);
+    }
+    return result;
+}
+
+/*@ requires \valid_read(state);
+    requires \forall integer i; 0 <= i < CUBIES ==>
+      0 <= state->p[i] < CUBIES;
+    requires \forall integer i, j; 0 <= i < j < CUBIES ==>
+      state->p[i] != state->p[j];
+    requires \forall integer i; 0 <= i < CUBIES ==>
+      0 <= state->o[i] < 3;
+    assigns \nothing;
+    ensures \result < STATES;
+ */
+static uint32_t rank_state(const state_t *state)
+{
+    uint32_t p = 0, o = 0;
+    /*@ loop invariant 0 <= i <= CUBIES;
+        loop invariant (i == 0 ==> p == 0) && (i == 1 ==> p <= 6) &&
+          (i == 2 ==> p <= 41) && (i == 3 ==> p <= 209) &&
+          (i == 4 ==> p <= 839) && (i == 5 ==> p <= 2519) &&
+          (i >= 6 ==> p <= 5039);
+        loop assigns i, p;
+        loop variant CUBIES - i;
+     */
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        uint8_t smaller = 0;
+        /*@ loop invariant i + 1 <= j <= CUBIES;
+            loop invariant smaller <= j - i - 1;
+            loop assigns j, smaller;
+            loop variant CUBIES - j;
+         */
+        for (uint8_t j = (uint8_t) (i + 1U); j < CUBIES; ++j)
+            if (state->p[j] < state->p[i])
+                ++smaller;
+        p = p * (CUBIES - i) + smaller; // Horner's rule
+    }
+    /*@ loop invariant 0 <= i <= 6;
+        loop invariant (i == 0 ==> o == 0) && (i == 1 ==> o < 3) &&
+          (i == 2 ==> o < 9) && (i == 3 ==> o < 27) &&
+          (i == 4 ==> o < 81) && (i == 5 ==> o < 243) &&
+          (i == 6 ==> o < 729);
+        loop assigns i, o;
+        loop variant 6 - i;
+     */
+    for (uint8_t i = 0; i < 6; ++i) // Change base-3 to decimal
+        o = o * 3U + state->o[i];
+    return p * ORIENTATIONS + o;
+}
+
+/*@ requires \valid(state); requires rank < STATES; assigns *state; */
+static void unrank_state(uint32_t rank, state_t *state)
+{
+    uint8_t available[CUBIES] = {0, 1, 2, 3, 4, 5, 6};
+    uint32_t p = rank / ORIENTATIONS, o = rank % ORIENTATIONS, f = 720;
+    uint8_t sum = 0;
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        uint8_t q = (uint8_t) (p / f);
+        p %= f;
+        state->p[i] = available[q];
+        for (uint8_t j = q; j + 1U < CUBIES - i; ++j)
+            available[j] = available[j + 1U];
+        if (i < 5)
+            f /= 6U - i;
+    }
+    for (uint8_t i = 6; i-- > 0;) {
+        state->o[i] = (uint8_t) (o % 3U);
+        sum = (uint8_t) (sum + state->o[i]);
+        o /= 3U;
+    }
+    state->o[6] = (uint8_t) ((3U - sum % 3U) % 3U);
+}
+
+static uint8_t *build_table(uint8_t *diameter, uint32_t *depth_cnt)
+{
+
+    uint8_t *toward_solved = malloc(STATES);
+    uint32_t *queue = malloc((size_t) STATES * sizeof *queue);
+    uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
+    uint32_t head = 0, tail = 1, level_end = 1;
+    state_t state;
+    if (!toward_solved || !queue) {
+        free(toward_solved);
+        free(queue);
+        return NULL;
+    }
+    for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
+        unrank_state((uint32_t) rank * ORIENTATIONS, &state);
+        for (uint8_t face = 0; face < 3; ++face) {
+            state_t next = quarter_turn(state, face);
+            permutation[face][rank] =
+                (uint16_t) (rank_state(&next) / ORIENTATIONS);
+        }
+    }
+    for (uint16_t rank = 0; rank < ORIENTATIONS; ++rank) {
+        unrank_state(rank, &state);
+        for (uint8_t face = 0; face < 3; ++face) {
+            state_t next = quarter_turn(state, face);
+            orientation[face][rank] =
+                (uint16_t) (rank_state(&next) % ORIENTATIONS);
+        }
+    }
+    memset(toward_solved, UINT8_MAX, STATES);
+    queue[0] = 0;
+    toward_solved[0] = 0;
+    *diameter = 0;  // Record the depth of BFS
+    while (head < tail) {
+        if (head == level_end) {
+            level_end = tail;
+            ++*diameter;
+        }
+        uint32_t here = queue[head++];
+        uint16_t p = (uint16_t) (here / ORIENTATIONS);
+        uint16_t o = (uint16_t) (here % ORIENTATIONS);
+        for (uint8_t face = 0; face < 3; ++face) {
+            // clockwise 90 degrees
+            uint16_t cw_p = permutation[face][p];
+            uint16_t cw_o = orientation[face][o];
+
+            uint32_t there = (uint32_t) cw_p * ORIENTATIONS + cw_o;
+            if (toward_solved[there] == UINT8_MAX) {
+                uint8_t move = (uint8_t) (face * 3U + 0);
+                toward_solved[there] = inverse_move[move];
+                queue[tail++] = there;
+                ++depth_cnt[*diameter + 1];
+            }
+            
+            // counterclockwise 90 degrees
+            uint16_t ccw_p = cw_p;
+            uint16_t ccw_o = cw_o;
+            for(uint8_t i = 0; i < 2; i++) {
+                ccw_p = permutation[face][ccw_p];
+                ccw_o = orientation[face][ccw_o];
+            }
+
+            there = (uint32_t) ccw_p * ORIENTATIONS + ccw_o;
+            if (toward_solved[there] == UINT8_MAX) {
+                uint8_t move = (uint8_t) (face * 3U + 2);
+                toward_solved[there] = inverse_move[move];
+                queue[tail++] = there;
+                ++depth_cnt[*diameter + 1];
+            }
+        }
+    }
+    free(queue);
+    if (tail != STATES) {
+        free(toward_solved);
+        return NULL;
+    }
+
+    return toward_solved;
+}
+
+/* stdout is fully buffered off a terminal, so a write error surfaces at the
+ * flush, not at the printf that queued the bytes. Every exit path that has
+ * produced output goes through here.
+ */
+static int output_failed(void)
+{
+    return fflush(stdout) != 0 || ferror(stdout);
+}
+
+int main(int argc, char **argv)
+{
+    state_t state;
+    uint8_t diameter;
+    uint32_t depth_cnt[15] = {0};
+    depth_cnt[0] = 1;
+
+
+    uint8_t *table = build_table(&diameter, depth_cnt);
+    if (!table) {
+        fputs("could not build complete state table\n", stderr);
+        return 1;
+    }
+
+    FILE *fp = fopen("QTM.csv", "w");
+    fprintf(fp, "depth,states\n");
+    for(uint8_t d = 0; d <= diameter; d++) {
+        fprintf(fp, "%d,%u\n", d, depth_cnt[d]);
+    }
+    fclose(fp);
+
+    free(table);
+    return output_failed();
+}
