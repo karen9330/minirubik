@@ -1,7 +1,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "pdb_tables.h"
+#include "utils/pdb_tables.h"
+
+#define SHOW_RESULT 1
+#if SHOW_RESULT
+#define PRINT_RES(...) printf(__VA_ARGS__)
+#else
+#define PRINT_RES(...) ((void)0)
+#endif
 
 enum {
     CUBIES = 7,
@@ -18,7 +25,9 @@ typedef struct {
 } state_t;
 
 typedef struct {
-    state_t state;
+    uint16_t p;
+    uint16_t o;
+
     /* Next move to try from this node: 0 ... 8 */
     uint8_t next_move;
     /* Face used to reach this node: 0=R, 1=B, 2=D, 3=none */
@@ -49,6 +58,33 @@ static const state_t solved = {
     {0, 0, 0, 0, 0, 0, 0}
 };
 
+static uint16_t rank_permutation(const state_t *state)
+{
+    uint16_t p = 0;
+
+    for (uint8_t i = 0; i < CUBIES; ++i) {
+        uint8_t smaller = 0;
+
+        for (uint8_t j = (uint8_t)(i + 1U); j < CUBIES; ++j) {
+            if (state->p[j] < state->p[i])
+                ++smaller;
+        }
+
+        p = p * (CUBIES - i) + smaller;
+    }
+
+    return p;
+}
+
+static uint16_t rank_orientation(const state_t *state)
+{
+    uint16_t o = 0;
+
+    for (uint8_t i = 0; i < 6; ++i) 
+        o = o * 3U + state->o[i];
+    return o;
+}
+
 static state_t quarter_turn(state_t state, uint8_t face)
 {
     state_t result;
@@ -64,33 +100,29 @@ static state_t quarter_turn(state_t state, uint8_t face)
     return result;
 }
 
+static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *next_p, uint16_t *next_o)
+{
+    uint8_t turns = (uint8_t)(move % 3U + 1U);
+    uint8_t face = (uint8_t)(move / 3U);
+
+    *next_p = p;
+    *next_o = o;
+
+    for (uint8_t i = 0; i < turns; ++i) {
+        *next_p = permutation_transition[face][*next_p];
+        *next_o = orientation_transition[face][*next_o];
+    }
+}
+
 static state_t apply_move(state_t state, uint8_t move)
 {
-    uint8_t turns = (uint8_t) (move % 3U + 1U);
-    uint8_t face = (uint8_t) (move / 3U);
+    uint8_t turns = (uint8_t)(move % 3U + 1U);
+    uint8_t face = (uint8_t)(move / 3U);
 
     for (uint8_t i = 0; i < turns; ++i)
         state = quarter_turn(state, face);
 
     return state;
-}
-
-static uint32_t rank_state(const state_t *state)
-{
-    uint32_t p = 0, o = 0;
-
-    for (uint8_t i = 0; i < CUBIES; ++i) {
-        uint8_t smaller = 0;
-
-        for (uint8_t j = (uint8_t) (i + 1U); j < CUBIES; ++j)
-            if (state->p[j] < state->p[i])
-                ++smaller;
-        p = p * (CUBIES - i) + smaller; // Horner's rule
-    }
-
-    for (uint8_t i = 0; i < 6; ++i) // Change base-3 to decimal
-        o = o * 3U + state->o[i];
-    return p * ORIENTATIONS + o;
 }
 
 static int is_solved(const state_t *state)
@@ -131,25 +163,21 @@ static int parse_state(const char *input, state_t *state)
     return input[14] == '\0' && valid(state);
 }
 
-static uint8_t heuristic(const state_t *state)
+static uint8_t heuristic(uint16_t p, uint16_t o)
 {
-    uint32_t rank = rank_state(state);
-
-    uint16_t p = (uint16_t)(rank / ORIENTATIONS);
-    uint16_t o = (uint16_t)(rank % ORIENTATIONS);
-
     uint8_t hp = permutation_pdb[p];
     uint8_t ho = orientation_pdb[o];
 
     return hp > ho ? hp : ho;
 }
 
-static int ida_iteration(state_t start, uint8_t bound, uint8_t *path, uint8_t *solution_length, uint8_t *next_bound, uint64_t *nodes)
+static int ida_iteration(uint16_t start_p, uint16_t start_o, uint8_t bound, uint8_t *path, uint8_t *solution_length, uint8_t *next_bound, uint64_t *nodes)
 {
     frame_t stack[MAX_DEPTH + 1];
     uint8_t depth = 0;
 
-    stack[0].state = start;
+    stack[0].p = start_p;
+    stack[0].o = start_o;
     stack[0].next_move = 0;
     stack[0].last_face = NO_FACE;
 
@@ -158,9 +186,9 @@ static int ida_iteration(state_t start, uint8_t bound, uint8_t *path, uint8_t *s
     ++(*nodes);
 
     while (1) {
-        state_t *current = &stack[depth].state;
+        frame_t *current = &stack[depth];
         // Calculate the F-score = g + h
-        uint8_t f = depth + heuristic(current);
+        uint8_t f = depth + heuristic(current->p, current->o);
 
         // Pruning the nodes whose F-score is higher than the bound
         if (f > bound) {
@@ -175,7 +203,7 @@ static int ida_iteration(state_t start, uint8_t bound, uint8_t *path, uint8_t *s
         }
 
         // Find the solved state
-        if (rank_state(current) == 0) {
+        if (current->p == 0 && current->o == 0) {
             *solution_length = depth;
             return 1;
         }
@@ -204,11 +232,14 @@ static int ida_iteration(state_t start, uint8_t bound, uint8_t *path, uint8_t *s
         if (face == stack[depth].last_face) continue;
 
         path[depth] = move;
-        state_t child = apply_move(stack[depth].state, move);
+        uint16_t child_p;
+        uint16_t child_o;
+        apply_ranked_move(stack[depth].p, stack[depth].o, move, &child_p, &child_o);
 
         ++depth;
 
-        stack[depth].state = child;
+        stack[depth].p = child_p;
+        stack[depth].o = child_o;
         stack[depth].next_move = 0;
         stack[depth].last_face = face;
 
@@ -216,24 +247,20 @@ static int ida_iteration(state_t start, uint8_t bound, uint8_t *path, uint8_t *s
     }
 }
 
-static int ida_star(state_t start, uint8_t *path, uint8_t *solution_length, uint64_t *total_nodes)
+static int ida_star(uint16_t start_p, uint16_t start_o, uint8_t *path, uint8_t *solution_length, uint64_t *total_nodes)
 {
 
-    uint8_t bound = heuristic(&start);
+    uint8_t bound = heuristic(start_p, start_o);
 
     *total_nodes = 0;
 
     while (bound <= MAX_DEPTH) {
         uint8_t next_bound;
         uint64_t iteration_nodes = 0;
-
-        printf("bound %u\n", bound);
-
-        int found = ida_iteration(start, bound, path, solution_length, &next_bound, &iteration_nodes);
-
+        
+        int found = ida_iteration(start_p, start_o, bound, path, solution_length, &next_bound, &iteration_nodes);
+        PRINT_RES("bound %u: %llu nodes%s\n", bound, (unsigned long long) iteration_nodes, found ? " (solution found)" : "");
         *total_nodes += iteration_nodes;
-
-        printf("  nodes: %llu\n", (unsigned long long)iteration_nodes);
 
         if (found) return 1;
 
@@ -270,7 +297,9 @@ int main(int argc, char **argv)
     uint8_t solution_length;
     uint64_t total_nodes;
 
-    if (!ida_star(start, path, &solution_length, &total_nodes)) {
+    uint16_t start_p = rank_permutation(&start);
+    uint16_t start_o = rank_orientation(&start);
+    if (!ida_star(start_p, start_o, path, &solution_length, &total_nodes)) {
         fprintf(stderr, "solution not found within depth %d\n", MAX_DEPTH);
         return 1;
     }

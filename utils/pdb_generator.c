@@ -184,21 +184,41 @@ int main(int argc, char **argv)
 
     fprintf(fptr, "#include <stdint.h>\n");
     fprintf(fptr, "static const uint8_t permutation_pdb[%d] = {\n", PERMUTATIONS);
-
     for (int p = 0; p < PERMUTATIONS; ++p) {
-        fprintf(fptr, "%u, ", permutation_pdb[p]);
-
+        fprintf(fptr, "%u%s ", permutation_pdb[p], p == PERMUTATIONS - 1 ? "" : ",");
         if ((p + 1) % 50 == 0) fprintf(fptr, "\n");
     }
-
     fprintf(fptr, "\n};\n");
-    fprintf(fptr, "static const uint8_t orientation_pdb[%d] = {\n", ORIENTATIONS);
 
+    fprintf(fptr, "static const uint8_t orientation_pdb[%d] = {\n", ORIENTATIONS);
     for(int o = 0; o < ORIENTATIONS; o++) {
-        fprintf(fptr, "%u, ", orientation_pdb[o]);
+        fprintf(fptr, "%u%s ", orientation_pdb[o], o == ORIENTATIONS - 1 ? "" : ",");
         if((o + 1) % 50 == 0) fprintf(fptr, "\n");
     }
     fprintf(fptr, "\n};\n");
+
+    fprintf(fptr, "static uint16_t permutation_transition[%d][%d] = {\n", 3, PERMUTATIONS);
+    for (uint8_t face = 0; face < 3; ++face) {
+        fprintf(fptr, "    {");
+        for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
+            fprintf(fptr, "%u%s ", permutation[face][rank], rank == PERMUTATIONS - 1 ? "" : ",");
+            if ((rank + 1) % 50 == 0) fprintf(fptr, "\n");
+        }
+        fprintf(fptr, "\n    }%s\n", face == 2 ? "" : ",");
+    }
+    fprintf(fptr, "};\n");
+
+    fprintf(fptr, "static const uint16_t orientation_transition[3][%d] = {\n", ORIENTATIONS);
+    for (uint8_t face = 0; face < 3; ++face) {
+        fprintf(fptr, "    {\n");
+        for (uint16_t rank = 0; rank < ORIENTATIONS; ++rank) {
+            fprintf(fptr, "%u%s ", orientation[face][rank], rank == ORIENTATIONS - 1 ? "" : ",");
+            if ((rank + 1) % 50 == 0) fprintf(fptr, "\n");
+        }
+        fprintf(fptr, "\n    }%s\n", face == 2 ? "" : ",");
+    }
+    fprintf(fptr, "};\n");
+
     fclose(fptr);
 
     free(permutation_pdb);
