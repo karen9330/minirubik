@@ -58,6 +58,14 @@ static const state_t solved = {
     {0, 0, 0, 0, 0, 0, 0}
 };
 
+static const uint8_t move_faces[9] = {
+    0, 0, 0, 1, 1, 1, 2, 2, 2
+};
+
+static const uint8_t move_turns[9] = {
+    1, 2, 3, 1, 2, 3, 1, 2, 3
+};
+
 static uint16_t rank_permutation(const state_t *state)
 {
     uint16_t p = 0;
@@ -102,8 +110,8 @@ static state_t quarter_turn(state_t state, uint8_t face)
 
 static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *next_p, uint16_t *next_o)
 {
-    uint8_t turns = (uint8_t)(move % 3U + 1U);
-    uint8_t face = (uint8_t)(move / 3U);
+    uint8_t turns = move_turns[move];
+    uint8_t face = move_faces[move];
 
     *next_p = p;
     *next_o = o;
@@ -116,8 +124,8 @@ static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *ne
 
 static state_t apply_move(state_t state, uint8_t move)
 {
-    uint8_t turns = (uint8_t)(move % 3U + 1U);
-    uint8_t face = (uint8_t)(move / 3U);
+    uint8_t turns = move_turns[move];
+    uint8_t face = move_faces[move];
 
     for (uint8_t i = 0; i < turns; ++i)
         state = quarter_turn(state, face);
@@ -226,7 +234,7 @@ static int ida_iteration(uint16_t start_p, uint16_t start_o, uint8_t bound, uint
 
         // Try next move
         uint8_t move = stack[depth].next_move++;
-        uint8_t face = move / 3U;
+        uint8_t face = move_faces[move];
 
         // Ssame-face pruning
         if (face == stack[depth].last_face) continue;
