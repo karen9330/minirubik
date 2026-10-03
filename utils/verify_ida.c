@@ -22,6 +22,7 @@ typedef struct {
 } state_t;
 
 typedef struct {
+    state_t state;
     uint16_t p;
     uint16_t o;
     
@@ -44,6 +45,14 @@ static const uint8_t twist[3][CUBIES] = {
     {1, 2, 0, 2, 1, 0, 0},
     {0, 0, 0, 1, 2, 1, 2},
     {0, 0, 0, 0, 0, 0, 0},
+};
+
+static const uint8_t move_faces[9] = {
+    0, 0, 0, 1, 1, 1, 2, 2, 2
+};
+
+static const uint8_t move_turns[9] = {
+    1, 2, 3, 1, 2, 3, 1, 2, 3
 };
 
 static uint16_t rank_permutation(const state_t *state)
@@ -73,10 +82,11 @@ static uint16_t rank_orientation(const state_t *state)
     return o;
 }
 
+// Used in 3-quarter-turn transition table
 static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *next_p, uint16_t *next_o)
 {
-    uint8_t turns = (uint8_t)(move % 3U + 1U);
-    uint8_t face = (uint8_t)(move / 3U);
+    uint8_t turns = move_turns[move];
+    uint8_t face = move_faces[move];
 
     *next_p = p;
     *next_o = o;
@@ -209,7 +219,7 @@ static int ida_iteration(uint16_t start_p, uint16_t start_o, uint8_t bound, uint
 
         // Try next move
         uint8_t move = stack[depth].next_move++;
-        uint8_t face = move / 3U;
+        uint8_t face = move_faces[move];
 
         // Ssame-face pruning
         if (face == stack[depth].last_face) continue;
@@ -217,7 +227,13 @@ static int ida_iteration(uint16_t start_p, uint16_t start_o, uint8_t bound, uint
         path[depth] = move;
         uint16_t child_p;
         uint16_t child_o;
-        apply_ranked_move(stack[depth].p, stack[depth].o, move, &child_p, &child_o);
+        
+        // 3-quarter-turn transition table
+        // apply_ranked_move(stack[depth].p, stack[depth].o, move, &child_p, &child_o);
+
+        // Direct move transition table
+        child_p = permutation_direct_move_transition[move][stack[depth].p];
+        child_o = orientation_direct_move_transition[move][stack[depth].o];
 
         ++depth;
 
@@ -257,6 +273,117 @@ static int ida_star(uint16_t start_p, uint16_t start_o, uint8_t *path, uint8_t *
     return 0;
 }
 
+static uint8_t heuristic_no_transition(const state_t *state)
+{
+    uint32_t rank = rank_state(state);
+
+    uint16_t p = (uint16_t)(rank / ORIENTATIONS);
+    uint16_t o = (uint16_t)(rank % ORIENTATIONS);
+
+    uint8_t hp = permutation_pdb[p];
+    uint8_t ho = orientation_pdb[o];
+
+    return hp > ho ? hp : ho;
+}
+
+static int ida_no_transition_iteration(state_t start, uint8_t bound, uint8_t *path, uint8_t *solution_length, uint8_t *next_bound, uint64_t *nodes)
+{
+    frame_t stack[MAX_DEPTH + 1];
+    uint8_t depth = 0;
+
+    stack[0].state = start;
+    stack[0].next_move = 0;
+    stack[0].last_face = NO_FACE;
+
+    *next_bound = UINT8_MAX;
+
+    ++(*nodes);
+
+    while (1) {
+        state_t *current = &stack[depth].state;
+        // Calculate the F-score = g + h
+        uint8_t f = depth + heuristic_no_transition(current);
+
+        // Pruning the nodes whose F-score is higher than the bound
+        if (f > bound) {
+
+            // Record the pruned nodes whose F-score is smallest
+            if (f < *next_bound) *next_bound = f;
+
+            if (depth == 0) return 0;
+
+            --depth;
+            continue;
+        }
+
+        // Find the solved state
+        if (rank_state(current) == 0) {
+            *solution_length = depth;
+            return 1;
+        }
+
+        // Restrict the max depth
+        if (depth == MAX_DEPTH) {
+            if (depth == 0) return 0;
+
+            --depth;
+            continue;
+        }
+
+        // All probable moves have been tried, get back to the parent node
+        if (stack[depth].next_move == MOVES) {
+            if (depth == 0) return 0;
+
+            --depth;
+            continue;
+        }
+
+        // Try next move
+        uint8_t move = stack[depth].next_move++;
+        uint8_t face = move / 3U;
+
+        // Ssame-face pruning
+        if (face == stack[depth].last_face) continue;
+
+        path[depth] = move;
+        state_t child = apply_move(stack[depth].state, move);
+
+        ++depth;
+
+        stack[depth].state = child;
+        stack[depth].next_move = 0;
+        stack[depth].last_face = face;
+
+        ++(*nodes);
+    }
+}
+
+static int ida_star_no_transition(state_t start, uint8_t *path, uint8_t *solution_length, uint64_t *total_nodes)
+{
+
+    uint8_t bound = heuristic_no_transition(&start);
+
+    *total_nodes = 0;
+
+    while (bound <= MAX_DEPTH) {
+        uint8_t next_bound;
+        uint64_t iteration_nodes = 0;
+
+        int found = ida_no_transition_iteration(start, bound, path, solution_length, &next_bound, &iteration_nodes);
+
+        *total_nodes += iteration_nodes;
+
+        if (found) return 1;
+
+        // Can't find
+        if (next_bound == UINT8_MAX)
+            return 0;
+
+        bound = next_bound;
+    }
+
+    return 0;
+}
 
 static int is_solved(const state_t *state)
 {
@@ -372,16 +499,19 @@ int main(void)
     for (uint32_t rank = 0; rank < TEST_LIMIT; ++rank) {
 
         state_t start;
-        unrank_state(rank, &start);
-        
-        uint16_t start_p = rank_permutation(&start);
-        uint16_t start_o = rank_orientation(&start);
-
         uint8_t path[MAX_DEPTH];
         uint8_t solution_length;
         uint64_t nodes = 0;
+        unrank_state(rank, &start);
 
-        int found = ida_star(start_p, start_o, path, &solution_length, &nodes);
+        // Factored transition table
+        // uint16_t start_p = rank_permutation(&start);
+        // uint16_t start_o = rank_orientation(&start);
+        
+        // int found = ida_star(start_p, start_o, path, &solution_length, &nodes);
+
+        // Full state without transition table
+        int found = ida_star_no_transition(start, path, &solution_length, &nodes);
 
         // Chech ida_star found the path
         if (!found) {
