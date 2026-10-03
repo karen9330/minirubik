@@ -27,6 +27,14 @@ static const uint8_t twist[3][CUBIES] = {
     {0, 0, 0, 0, 0, 0, 0},
 };
 
+static const uint8_t move_faces[9] = {
+    0, 0, 0, 1, 1, 1, 2, 2, 2
+};
+
+static const uint8_t move_turns[9] = {
+    1, 2, 3, 1, 2, 3, 1, 2, 3
+};
+
 static state_t quarter_turn(state_t state, uint8_t face)
 {
     state_t result;
@@ -36,6 +44,16 @@ static state_t quarter_turn(state_t state, uint8_t face)
         result.o[i] = (uint8_t) ((state.o[from] + twist[face][i]) % 3U);
     }
     return result;
+}
+
+static state_t apply_move(state_t state, uint8_t move)
+{
+    uint8_t turns = move_turns[move];
+    uint8_t face = move_faces[move];
+    for (uint8_t i = 0; i < turns; ++i)
+        state = quarter_turn(state, face);
+
+    return state;
 }
 
 static uint32_t rank_state(const state_t *state)
@@ -76,153 +94,392 @@ static void unrank_state(uint32_t rank, state_t *state)
     state->o[6] = (uint8_t) ((3U - sum % 3U) % 3U);
 }
 
-static uint8_t *build_permutation_pdb(uint16_t permutation[3][PERMUTATIONS])
+static uint16_t **allocate_transition_table(size_t rows, size_t columns)
 {
-    uint16_t queue[PERMUTATIONS];
-    uint16_t head = 0, tail = 1;
-    uint8_t *permutation_pdb = malloc(sizeof(uint8_t) * PERMUTATIONS);
+    uint16_t **table = malloc(sizeof(*table) * rows);
 
-    memset(permutation_pdb, UINT8_MAX, PERMUTATIONS);
+    if (table == NULL) return NULL;
 
-    permutation_pdb[0] = 0;
+    for (size_t row = 0; row < rows; ++row) {
+        table[row] = malloc(sizeof(**table) * columns);
+
+        if (table[row] == NULL) {
+            for (size_t i = 0; i < row; ++i)
+                free(table[i]);
+
+            free(table);
+            return NULL;
+        }
+    }
+
+    return table;
+}
+
+static void free_transition_table(uint16_t **table, size_t rows)
+{
+    if (table == NULL) return;
+
+    for (size_t row = 0; row < rows; ++row)
+        free(table[row]);
+
+    free(table);
+}
+
+static uint8_t *build_pdb(uint16_t num_states, uint16_t **transition)
+{
+    uint16_t *queue = malloc(sizeof(*queue) * num_states);
+    uint8_t *pdb = malloc(sizeof(*pdb) * num_states);
+
+    if (queue == NULL || pdb == NULL) {
+        free(queue);
+        free(pdb);
+        return NULL;
+    }
+
+    memset(pdb, UINT8_MAX, num_states);
+
+    size_t head = 0;
+    size_t tail = 1;
+
+    pdb[0] = 0;
     queue[0] = 0;
 
     while (head < tail) {
-        uint16_t p = queue[head++];
-        uint8_t depth = permutation_pdb[p];
+        uint16_t rank = queue[head++];
+        uint8_t depth = pdb[rank];
 
-        for (uint8_t face = 0; face < 3; face++) {
-            uint16_t next = p;
-            for (uint8_t turn = 0; turn < 3; turn++) {
-                next = permutation[face][next];
-                if (permutation_pdb[next] == UINT8_MAX) {
-                    permutation_pdb[next] = (uint8_t) (depth + 1);
+        for (uint8_t face = 0; face < 3; ++face) {
+            uint16_t next = rank;
+
+            for (uint8_t turn = 0; turn < 3; ++turn) {
+                next = transition[face][next];
+
+                if (pdb[next] == UINT8_MAX) {
+                    pdb[next] = (uint8_t)(depth + 1);
                     queue[tail++] = next;
                 }
             }
         }
     }
 
-    return permutation_pdb;
+    free(queue);
+    return pdb;
 }
 
-static uint8_t *build_orientation_pdb(uint16_t orientation[3][ORIENTATIONS])
+static uint16_t **build_transition(uint16_t num_states)
 {
-    uint16_t queue[ORIENTATIONS];
-    uint16_t head = 0, tail = 1;
-    uint8_t *orientation_pdb = malloc(sizeof(uint8_t) * ORIENTATIONS);
+    uint16_t **transition = allocate_transition_table(3, num_states);
+    if (transition == NULL) return NULL;
 
-    memset(orientation_pdb, UINT8_MAX, ORIENTATIONS);
-
-    orientation_pdb[0] = 0;
-    queue[0] = 0;
-
-    while (head < tail) {
-        uint16_t o = queue[head++];
-        uint8_t depth = orientation_pdb[o];
-
-        for (uint8_t face = 0; face < 3; face++) {
-            uint16_t next = o;
-            for (uint8_t turn = 0; turn < 3; turn++) {
-                next = orientation[face][next];
-                if (orientation_pdb[next] == UINT8_MAX) {
-                    orientation_pdb[next] = (uint8_t) (depth + 1);
-                    queue[tail++] = next;
-                }
-            }
-        }
-    }
-
-    return orientation_pdb;
-}
-
-static int output_failed(void)
-{
-    return fflush(stdout) != 0 || ferror(stdout);
-}
-
-int main(int argc, char **argv)
-{
-    uint16_t permutation[3][PERMUTATIONS], orientation[3][ORIENTATIONS];
     state_t state;
 
-    for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
-        unrank_state((uint32_t) rank * ORIENTATIONS, &state);
+    for (uint16_t rank = 0; rank < num_states; ++rank) {
+        if (num_states == PERMUTATIONS)
+            unrank_state((uint32_t)rank * ORIENTATIONS, &state);
+        else
+            unrank_state(rank, &state);
+
         for (uint8_t face = 0; face < 3; ++face) {
             state_t next = quarter_turn(state, face);
-            permutation[face][rank] = (uint16_t) (rank_state(&next) / ORIENTATIONS);
-        }
-    }
-    for (uint16_t rank = 0; rank < ORIENTATIONS; ++rank) {
-        unrank_state(rank, &state);
-        for (uint8_t face = 0; face < 3; ++face) {
-            state_t next = quarter_turn(state, face);
-            orientation[face][rank] = (uint16_t) (rank_state(&next) % ORIENTATIONS);
+            uint32_t next_rank = rank_state(&next);
+
+            if (num_states == PERMUTATIONS)
+                transition[face][rank] = (uint16_t)(next_rank / ORIENTATIONS);
+            else
+                transition[face][rank] = (uint16_t)(next_rank % ORIENTATIONS);
         }
     }
 
-    uint8_t *permutation_pdb =  build_permutation_pdb(permutation);
-    if(!permutation_pdb) {
-        fprintf(stderr, "could not build complete permutation PDB\n");
+    return transition;
+}
+
+static uint16_t **build_direct_move_transition(uint16_t num_states)
+{
+    uint16_t **transition = allocate_transition_table(MOVES, num_states);
+    if (transition == NULL) return NULL;
+
+    state_t state;
+
+    for (uint16_t rank = 0; rank < num_states; ++rank) {
+        if (num_states == PERMUTATIONS)
+            unrank_state((uint32_t)rank * ORIENTATIONS, &state);
+        else
+            unrank_state(rank, &state);
+
+        for (uint8_t move = 0; move < MOVES; ++move) {
+            state_t next = apply_move(state, move);
+            uint32_t next_rank = rank_state(&next);
+
+            if (num_states == PERMUTATIONS)
+                transition[move][rank] = (uint16_t)(next_rank / ORIENTATIONS);
+            else
+                transition[move][rank] = (uint16_t)(next_rank % ORIENTATIONS);
+        }
+    }
+
+    return transition;
+}
+
+static int verify_direct_move_transitions(uint16_t **permutation_transition, uint16_t **orientation_transition,
+                                          uint16_t **permutation_direct, uint16_t **orientation_direct)
+{
+    for (uint16_t p = 0; p < PERMUTATIONS; p++) {
+        for (uint8_t move = 0; move < MOVES; move++) {
+
+            uint16_t expected = p;
+            uint8_t face = move_faces[move];
+            uint8_t turns = move_turns[move];
+
+            for (uint8_t turn = 0; turn < turns; turn++)
+                expected = permutation_transition[face][expected];
+            
+            if (expected != permutation_direct[move][p]) {
+
+                fprintf(stderr, "permutation mismatch: " "move=%u rank=%u " "expected=%u actual=%u\n",
+                        move, p, expected, permutation_direct[move][p]);
+                return 0;
+            }
+        }
+    }
+
+    for (uint16_t o = 0; o < ORIENTATIONS; o++) {
+        for (uint8_t move = 0; move < MOVES; move++) {
+
+            uint16_t expected = o;
+            uint8_t face = move_faces[move];
+            uint8_t turns = move_turns[move];
+
+            for (uint8_t turn = 0; turn < turns; turn++)
+                expected = orientation_transition[face][expected];
+            
+
+            if (expected != orientation_direct[move][o]) {
+
+                fprintf(stderr, "orientation mismatch: " "move=%u rank=%u " "expected=%u actual=%u\n",
+                        move, o, expected, orientation_direct[move][o]);
+                return 0;
+            }
+        }
+    }
+
+    return 1;
+}
+
+static void output_uint8_array(FILE *fptr, const char *name, const uint8_t *array, size_t size)
+{
+    fprintf(fptr, "static const uint8_t %s[%zu] = {\n", name, size);
+
+    for (size_t i = 0; i < size; i++) {
+        fprintf(fptr,"    %u%s", array[i], i + 1 == size ? "" : ",");
+        if ((i + 1) % 16 == 0) fprintf(fptr, "\n");
+    }
+
+    fprintf(fptr, "\n};\n\n");
+}
+
+static void output_uint16_table(FILE *fptr, const char *name, uint16_t **table, size_t rows, size_t columns)
+{
+    fprintf(fptr, "static const uint16_t " "%s[%zu][%zu] = {\n", name, rows, columns);
+
+    for (size_t row = 0; row < rows; row++) {
+        fprintf(fptr, "    {\n");
+
+        for (size_t column = 0; column < columns; column++) {
+            fprintf(fptr, "        %u%s", table[row][column], column + 1 == columns ? "" : ",");
+            if ((column + 1) % 12 == 0) fprintf(fptr, "\n");
+        }
+
+        fprintf(fptr, "\n    }%s\n", row + 1 == rows ? "" : ",");
+    }
+
+    fprintf(fptr, "};\n\n");
+}
+
+static int output_header_file(const char *filename, uint8_t *permutation_pdb, uint8_t *orientation_pdb,
+                              uint16_t **permutation_transition, uint16_t **orientation_transition,
+                              uint16_t **permutation_direct, uint16_t **orientation_direct)
+{
+    FILE *fptr = fopen(filename, "w");
+
+    if (fptr == NULL) {
+        fprintf(stderr, "could not open %s\n", filename);
+        return 0;
+    }
+
+    output_uint8_array(fptr, "permutation_pdb", permutation_pdb, PERMUTATIONS);
+    output_uint8_array(fptr, "orientation_pdb", orientation_pdb, ORIENTATIONS);
+    
+    output_uint16_table(fptr, "permutation_transition", permutation_transition, 3, PERMUTATIONS);
+    output_uint16_table(fptr, "orientation_transition", orientation_transition, 3, ORIENTATIONS);
+
+    output_uint16_table(fptr, "permutation_direct_move_transition", permutation_direct, MOVES, PERMUTATIONS);
+    output_uint16_table(fptr, "orientation_direct_move_transition", orientation_direct, MOVES, ORIENTATIONS);
+
+
+    if (fclose(fptr) != 0) {
+        fprintf(stderr, "could not close %s\n", filename);
+        return 0;
+    }
+
+    return 1;
+}
+
+static void output_asm_uint8_array(FILE *fptr, const char *name, const uint8_t *array, size_t size)
+{
+    fprintf(fptr, ".globl %s\n", name);
+    fprintf(fptr, "%s:\n", name);
+
+    for (size_t i = 0; i < size; i += 16) {
+        fprintf(fptr, "    .byte ");
+        size_t end = i + 16;
+        if (end > size) end = size;
+        for (size_t j = i; j < end; j++) {
+            fprintf(fptr, "%u%s", array[j], j + 1 == end ? "" : ", ");
+        }
+        fprintf(fptr, "\n");
+    }
+
+    fprintf(fptr, "\n");
+}
+
+static void output_asm_uint16_table(FILE *fptr, const char *name, uint16_t **table, size_t rows, size_t columns)
+{
+    fprintf(fptr, ".globl %s\n", name);
+    fprintf(fptr, "%s:\n", name);
+
+    for (size_t row = 0; row < rows; row++) {
+        for (size_t column = 0; column < columns; column += 12) {
+            fprintf(fptr, "    .half ");
+            size_t end = column + 12;
+            if (end > columns) end = columns;
+            for (size_t j = column; j < end; j++) {
+                fprintf(fptr, "%u%s", table[row][j], j + 1 == end ? "" : ", ");
+            }
+
+            fprintf(fptr, "\n");
+        }
+    }
+
+    fprintf(fptr, "\n");
+}
+
+static int output_asm_header(const char *filename, uint8_t *permutation_pdb, uint8_t *orientation_pdb,
+                              uint16_t **permutation_direct, uint16_t **orientation_direct) {
+    FILE *fptr = fopen(filename, "w");
+
+    if (fptr == NULL) {
+        fprintf(stderr, "could not open %s\n", filename);
+        return 0;
+    }
+    
+    fprintf(fptr, ".section .rodata\n\n");
+    output_asm_uint8_array(fptr, "per_pdb", permutation_pdb, PERMUTATIONS);
+    output_asm_uint8_array(fptr, "ori_pdb", orientation_pdb, ORIENTATIONS);
+
+    output_asm_uint16_table(fptr, "per_trans", permutation_direct, MOVES, PERMUTATIONS);
+    output_asm_uint16_table(fptr, "ori_trans", orientation_direct, MOVES, ORIENTATIONS);
+
+    if (fclose(fptr) != 0) {
+        fprintf(stderr, "could not close %s\n", filename);
+        return 0;
+    }
+
+    return 1;
+}
+
+int main(void)
+{
+    uint16_t **permutation_transition = build_transition(PERMUTATIONS);
+    if (permutation_transition == NULL) {
+        fprintf(stderr, "could not build permutation transition\n");
         return 1;
     }
 
-    uint8_t *orientation_pdb =  build_orientation_pdb(orientation);
-    if(!orientation_pdb) {
+    uint16_t **orientation_transition = build_transition(ORIENTATIONS);
+    if (orientation_transition == NULL) {
+        fprintf(stderr, "could not build orientation transition\n");
+        free_transition_table(permutation_transition, 3);
+        return 1;
+    }
+
+    uint8_t *permutation_pdb = build_pdb(PERMUTATIONS, permutation_transition);
+    if (permutation_pdb == NULL) {
+        fprintf(stderr, "could not build permutation PDB\n");
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
+        return 1;
+    }
+
+    uint8_t *orientation_pdb = build_pdb(ORIENTATIONS, orientation_transition);
+    if (orientation_pdb == NULL) {
+        fprintf(stderr, "could not build orientation PDB\n");
         free(permutation_pdb);
-        fprintf(stderr, "could not build complete orientation PDB\n");
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
         return 1;
     }
 
-    FILE *fptr = fopen("pdb_tables.h", "w");
-    if(fptr == NULL) {
-        fprintf(stderr, "could not open file\n");
+    uint16_t **permutation_direct = build_direct_move_transition(PERMUTATIONS);
+    if (permutation_direct == NULL) {
+        fprintf(stderr, "could not build permutation direct transition\n");
         free(permutation_pdb);
         free(orientation_pdb);
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
         return 1;
     }
 
-    fprintf(fptr, "#include <stdint.h>\n");
-    fprintf(fptr, "static const uint8_t permutation_pdb[%d] = {\n", PERMUTATIONS);
-    for (int p = 0; p < PERMUTATIONS; ++p) {
-        fprintf(fptr, "%u%s ", permutation_pdb[p], p == PERMUTATIONS - 1 ? "" : ",");
-        if ((p + 1) % 50 == 0) fprintf(fptr, "\n");
+    uint16_t **orientation_direct = build_direct_move_transition(ORIENTATIONS);
+    if (orientation_direct == NULL) {
+        fprintf(stderr, "could not build orientation direct transition\n");
+        free(permutation_pdb);
+        free(orientation_pdb);
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
+        free_transition_table(permutation_direct, MOVES);
+        return 1;
     }
-    fprintf(fptr, "\n};\n");
 
-    fprintf(fptr, "static const uint8_t orientation_pdb[%d] = {\n", ORIENTATIONS);
-    for(int o = 0; o < ORIENTATIONS; o++) {
-        fprintf(fptr, "%u%s ", orientation_pdb[o], o == ORIENTATIONS - 1 ? "" : ",");
-        if((o + 1) % 50 == 0) fprintf(fptr, "\n");
+    if (!verify_direct_move_transitions(permutation_transition, orientation_transition, permutation_direct, orientation_direct)) {
+        fprintf(stderr, "direct transition verification failed\n");
+        free(permutation_pdb);
+        free(orientation_pdb);
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
+        free_transition_table(permutation_direct, MOVES);
+        free_transition_table(orientation_direct, MOVES);
+        return 1;
     }
-    fprintf(fptr, "\n};\n");
 
-    fprintf(fptr, "static uint16_t permutation_transition[%d][%d] = {\n", 3, PERMUTATIONS);
-    for (uint8_t face = 0; face < 3; ++face) {
-        fprintf(fptr, "    {");
-        for (uint16_t rank = 0; rank < PERMUTATIONS; ++rank) {
-            fprintf(fptr, "%u%s ", permutation[face][rank], rank == PERMUTATIONS - 1 ? "" : ",");
-            if ((rank + 1) % 50 == 0) fprintf(fptr, "\n");
-        }
-        fprintf(fptr, "\n    }%s\n", face == 2 ? "" : ",");
+    printf("verified all direct move transitions\n");
+
+    if (!output_header_file("pdb_tables.h", permutation_pdb, orientation_pdb, permutation_transition, orientation_transition, permutation_direct, orientation_direct)) {
+        free(permutation_pdb);
+        free(orientation_pdb);
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
+        free_transition_table(permutation_direct, MOVES);
+        free_transition_table(orientation_direct, MOVES);
+        return 1;
     }
-    fprintf(fptr, "};\n");
 
-    fprintf(fptr, "static const uint16_t orientation_transition[3][%d] = {\n", ORIENTATIONS);
-    for (uint8_t face = 0; face < 3; ++face) {
-        fprintf(fptr, "    {\n");
-        for (uint16_t rank = 0; rank < ORIENTATIONS; ++rank) {
-            fprintf(fptr, "%u%s ", orientation[face][rank], rank == ORIENTATIONS - 1 ? "" : ",");
-            if ((rank + 1) % 50 == 0) fprintf(fptr, "\n");
-        }
-        fprintf(fptr, "\n    }%s\n", face == 2 ? "" : ",");
+    if (!output_asm_header("pdb_tables.s", permutation_pdb, orientation_pdb, permutation_direct, orientation_direct)) {
+        free(permutation_pdb);
+        free(orientation_pdb);
+        free_transition_table(permutation_transition, 3);
+        free_transition_table(orientation_transition, 3);
+        free_transition_table(permutation_direct, MOVES);
+        free_transition_table(orientation_direct, MOVES);
+        return 1;
     }
-    fprintf(fptr, "};\n");
-
-    fclose(fptr);
 
     free(permutation_pdb);
     free(orientation_pdb);
-    
-    return output_failed();
+    free_transition_table(permutation_transition, 3);
+    free_transition_table(orientation_transition, 3);
+    free_transition_table(permutation_direct, MOVES);
+    free_transition_table(orientation_direct, MOVES);
+
+    printf("generated pdb_tables.h\n");
+    return 0;
 }
