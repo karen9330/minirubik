@@ -108,7 +108,8 @@ static state_t quarter_turn(state_t state, uint8_t face)
     return result;
 }
 
-static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *next_p, uint16_t *next_o)
+// Used in 3-quarter-turn transition table
+/*static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *next_p, uint16_t *next_o)
 {
     uint8_t turns = move_turns[move];
     uint8_t face = move_faces[move];
@@ -120,7 +121,7 @@ static void apply_ranked_move(uint16_t p, uint16_t o, uint8_t move, uint16_t *ne
         *next_p = permutation_transition[face][*next_p];
         *next_o = orientation_transition[face][*next_o];
     }
-}
+}*/
 
 static state_t apply_move(state_t state, uint8_t move)
 {
@@ -236,13 +237,19 @@ static int ida_iteration(uint16_t start_p, uint16_t start_o, uint8_t bound, uint
         uint8_t move = stack[depth].next_move++;
         uint8_t face = move_faces[move];
 
-        // Ssame-face pruning
+        // Same-face pruning
         if (face == stack[depth].last_face) continue;
 
         path[depth] = move;
         uint16_t child_p;
         uint16_t child_o;
-        apply_ranked_move(stack[depth].p, stack[depth].o, move, &child_p, &child_o);
+
+        // 3-quarter-turn transition table
+        //apply_ranked_move(stack[depth].p, stack[depth].o, move, &child_p, &child_o);
+
+        // Direct move transition table
+        child_p = permutation_direct_move_transition[move][stack[depth].p];
+        child_o = orientation_direct_move_transition[move][stack[depth].o];
 
         ++depth;
 
