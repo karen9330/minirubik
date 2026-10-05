@@ -1,5 +1,25 @@
 .section .rodata
 
+.globl move_faces
+move_faces:
+    .byte 0, 0, 0, 1, 1, 1, 2, 2, 2
+
+.globl move_turns
+move_turns:
+    .byte 1, 2, 3, 1, 2, 3, 1, 2, 3
+
+.globl source
+source:
+    .byte 1, 4, 2, 0, 3, 5, 6
+    .byte 0, 1, 2, 4, 5, 6, 3
+    .byte 0, 2, 5, 3, 1, 4, 6
+
+.globl twist
+twist:
+    .byte 1, 2, 0, 2, 1, 0, 0
+    .byte 0, 0, 0, 1, 2, 1, 2
+    .byte 0, 0, 0, 0, 0, 0, 0
+
 .globl per_pdb
 per_pdb:
     .byte 0, 7, 7, 6, 6, 6, 7, 5, 6, 1, 6, 6, 6, 6, 6, 6
@@ -366,6 +386,32 @@ ori_pdb:
     .byte 5, 5, 6, 5, 4, 5, 6, 5, 4, 5, 3, 5, 5, 4, 3, 4
     .byte 4, 4, 5, 4, 4, 5, 4, 5, 6, 5, 4, 5, 5, 4, 4, 5
     .byte 5, 5, 4, 5, 4, 5, 3, 5, 5
+
+.align 2
+.globl per_trans_rows
+per_trans_rows:
+    .word per_trans + 0
+    .word per_trans + 10080
+    .word per_trans + 20160
+    .word per_trans + 30240
+    .word per_trans + 40320
+    .word per_trans + 50400
+    .word per_trans + 60480
+    .word per_trans + 70560
+    .word per_trans + 80640
+
+.align 2
+.globl ori_trans_rows
+ori_trans_rows:
+    .word ori_trans + 0
+    .word ori_trans + 1458
+    .word ori_trans + 2916
+    .word ori_trans + 4374
+    .word ori_trans + 5832
+    .word ori_trans + 7290
+    .word ori_trans + 8748
+    .word ori_trans + 10206
+    .word ori_trans + 11664
 
 .globl per_trans
 per_trans:
