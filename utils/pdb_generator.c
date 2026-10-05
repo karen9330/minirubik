@@ -363,6 +363,21 @@ static void output_asm_uint16_table(FILE *fptr, const char *name, uint16_t **tab
     fprintf(fptr, "\n");
 }
 
+static void output_asm_row_pointers(FILE *fptr, const char *pointer_name, const char *table_name, size_t rows, size_t columns)
+{
+    size_t row_bytes = columns * sizeof(uint16_t);
+
+    fprintf(fptr, ".align 2\n");
+    fprintf(fptr, ".globl %s\n", pointer_name);
+    fprintf(fptr, "%s:\n", pointer_name);
+
+    for (size_t row = 0; row < rows; ++row) {
+        fprintf(fptr, "    .word %s + %zu\n", table_name, row * row_bytes);
+    }
+
+    fprintf(fptr, "\n");
+}
+
 static int output_asm_header(const char *filename, uint8_t *permutation_pdb, uint8_t *orientation_pdb,
                               uint16_t **permutation_direct, uint16_t **orientation_direct) {
     FILE *fptr = fopen(filename, "w");
@@ -376,6 +391,9 @@ static int output_asm_header(const char *filename, uint8_t *permutation_pdb, uin
     output_asm_uint8_array(fptr, "per_pdb", permutation_pdb, PERMUTATIONS);
     output_asm_uint8_array(fptr, "ori_pdb", orientation_pdb, ORIENTATIONS);
 
+    output_asm_row_pointers(fptr, "per_trans_rows", "per_trans", 9, 5040);
+    output_asm_row_pointers(fptr, "ori_trans_rows", "ori_trans", 9, 729);
+    
     output_asm_uint16_table(fptr, "per_trans", permutation_direct, MOVES, PERMUTATIONS);
     output_asm_uint16_table(fptr, "ori_trans", orientation_direct, MOVES, ORIENTATIONS);
 
