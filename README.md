@@ -224,3 +224,6 @@ empty line.
 
 See [`report.md`](report.md) for the model, algorithm, diagrams, and Frama-C
 validation notes.
+
+For build, execution, measurement, and LED visualization instructions, see
+[BUILD_AND_RUN.md](BUILD_AND_RUN.md).
