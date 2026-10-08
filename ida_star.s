@@ -1,3 +1,4 @@
+.equ RENDER, 1
 .text
 .globl main
 
@@ -15,6 +16,10 @@ main:
     sw s8, 160(sp)
     sw s9, 164(sp)
     sw s10, 168(sp)
+
+.if RENDER
+    sw ra, 172(sp)         # need to call function render_state
+.endif
 
     addi s0, sp, 20        # s0 = path base
     la s2, per_pdb         # s2 = &per_pdb
@@ -348,10 +353,21 @@ search_found:
     bne t0, s7, search_fail   # if solution_length != expected_length; goto search_fail
 
 self_test_setup:
-    addi t1, sp, 0           # t1 = check_state base
+    addi t1, sp, 0            # t1 = check_state base
     addi t2, sp, 32           # t2 = next_state base
-    li s8, 0                  # s8 = path index = 0
+    
+.if RENDER
+    sw t1, 48(sp)             # save t1 and t2
+    sw t2, 52(sp)
 
+    mv a0, t1
+    jal ra, render_state
+
+    lw t1, 48(sp)
+    lw t2, 52(sp)
+.endif
+
+    li s8, 0                  # s8 = path index = 0
 replay_move_loop:
     beq s8, s7, replay_done   # if path_index == solution_length; goto replay_done
     add t3, s0, s8            # t3 = &path[s8]
@@ -412,6 +428,17 @@ quarter_turn_done:
     j quarter_turn_loop
 
 move_done:
+.if RENDER
+    sw t1, 48(sp)             # save t1 and t2
+    sw t2, 52(sp)
+
+    mv a0, t1
+    jal ra, render_state
+
+    lw t1, 48(sp)
+    lw t2, 52(sp)
+.endif
+
     addi s8, s8, 1            # path_index++
     j replay_move_loop
 
@@ -462,6 +489,8 @@ main_epilogue:
     lw s8, 160(sp)
     lw s9, 164(sp)
     lw s10, 168(sp)
-
+.if RENDER
+    lw ra, 172(sp)
+.endif
     addi sp, sp, 176
     ret
